@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { JarvisCore } from "@/components/jarvis/JarvisCore";
 import { StartMachineModal } from "@/components/jarvis/StartMachineModal";
+import { PinGate } from "@/components/jarvis/PinGate";
 
 const Index = () => {
   const [started, setStarted] = useState(false);
+  const [pinAuthorized, setPinAuthorized] = useState(false);
 
   // Backend endpoint for the Jarvis response.
   // You can set this in your environment: VITE_JARVIS_API_URL
@@ -35,10 +37,19 @@ const Index = () => {
         <JarvisCore started={started} apiUrl={apiUrl} />
       </div>
 
-      <StartMachineModal open={!started} onStart={() => setStarted(true)} />
+      {/* Security layer: must pass PIN gate before Start Machine can activate. */}
+      <PinGate
+        open={!pinAuthorized}
+        onAuthorized={() => {
+          setPinAuthorized(true);
+          setStarted(true);
+        }}
+      />
+
+      {/* Keep the original Start Machine modal available, but only after security gate. */}
+      <StartMachineModal open={!started && pinAuthorized} onStart={() => setStarted(true)} />
     </div>
   );
 };
 
 export default Index;
-
