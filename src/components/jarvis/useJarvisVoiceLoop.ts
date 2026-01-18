@@ -9,7 +9,7 @@ export type JarvisMessage = {
   ts: number;
 };
 
-export type JarvisPhase = "locked" | "booting" | "listening" | "thinking" | "speaking" | "error";
+export type JarvisPhase = "locked" | "booting" | "idle" | "listening" | "thinking" | "speaking" | "error";
 
 export type JarvisError = {
   title: string;
@@ -19,12 +19,14 @@ export type JarvisError = {
 export function useJarvisVoiceLoop({
   started,
   apiUrl,
+  micEnabled,
 }: {
   started: boolean;
   apiUrl: string;
+  micEnabled: boolean;
 }) {
   const [phase, setPhase] = useState<JarvisPhase>(started ? "booting" : "locked");
-  const [micEnabled, setMicEnabled] = useState(false);
+  const [micActive, setMicActive] = useState(false);
   const [error, setError] = useState<JarvisError | null>(null);
   const [messages, setMessages] = useState<JarvisMessage[]>([]);
 
@@ -32,6 +34,7 @@ export function useJarvisVoiceLoop({
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const speakingRef = useRef(false);
   const thinkingAbortRef = useRef<AbortController | null>(null);
+  const micEnabledRef = useRef<boolean>(micEnabled);
 
   const supportsSpeechRecognition = useMemo(() => {
     return typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -51,7 +54,7 @@ export function useJarvisVoiceLoop({
   };
 
   const stopListeningHard = () => {
-    setMicEnabled(false);
+    setMicActive(false);
     const rec = recognitionRef.current;
     if (!rec) return;
     try {
@@ -70,9 +73,9 @@ export function useJarvisVoiceLoop({
     setPhase("speaking");
 
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      // If TTS isn't available, we still move to listening after a short delay.
+      // If TTS isn't available, we still move to next phase after a short delay.
       await new Promise((r) => setTimeout(r, 900));
-      setPhase("listening");
+      setPhase(micEnabledRef.current ? "listening" : "idle");
       return;
     }
 
@@ -101,8 +104,8 @@ export function useJarvisVoiceLoop({
       window.speechSynthesis.speak(u);
     });
 
-    // LISTEN → THINK → SPEAK → LISTEN
-    setPhase("listening");
+    // LISTEN → THINK → SPEAK → LISTEN (or idle if mic is user-disabled)
+    setPhase(micEnabledRef.current ? "listening" : "idle");
   };
 
   const callBackend = async (text: string) => {
@@ -189,7 +192,7 @@ export function useJarvisVoiceLoop({
     lastTranscriptRef.current = "";
 
     rec.onstart = () => {
-      setMicEnabled(true);
+      setMicActive(true);
     };
 
     rec.onresult = (ev) => {
@@ -198,7 +201,7 @@ export function useJarvisVoiceLoop({
     };
 
     rec.onerror = (ev) => {
-      setMicEnabled(false);
+      setMicActive(false);
       // Common: 'not-allowed', 'audio-capture', 'network'
       setError({ title: "Voice input error", detail: `${ev.error}${ev.message ? `: ${ev.message}` : ""}` });
       setPhase("error");
@@ -206,12 +209,12 @@ export function useJarvisVoiceLoop({
 
     rec.onend = () => {
       // Mic turns OFF immediately when user finishes speaking.
-      setMicEnabled(false);
+      setMicActive(false);
 
       const transcript = lastTranscriptRef.current.trim();
       if (!transcript) {
         // No speech captured: auto-rearm listening after a short pause.
-        if (phase === "listening") {
+        if (phase === "listening" && micEnabledRef.current) {
           window.setTimeout(() => startListening(), 450);
         }
         return;
@@ -231,6 +234,21 @@ export function useJarvisVoiceLoop({
     }
   };
 
+  // Keep a ref to avoid stale reads inside async callbacks.
+  useEffect(() => {
+    micEnabledRef.current = micEnabled;
+
+    // User override: if mic is OFF, recognition must be fully disabled.
+    if (!micEnabled) {
+      stopListeningHard();
+      // Only move to idle if we're not in an active think/speak/error state.
+      setPhase((p) => (p === "thinking" || p === "speaking" || p === "error" ? p : started ? "idle" : "locked"));
+    } else {
+      // If user toggles mic back ON, return to listening (which will re-arm recognition).
+      setPhase((p) => (p === "idle" ? "listening" : p));
+    }
+  }, [micEnabled, started]);
+
   // Boot sequence after clicking Start Machine
   useEffect(() => {
     if (!started) {
@@ -242,7 +260,7 @@ export function useJarvisVoiceLoop({
     setPhase("booting");
 
     const t = window.setTimeout(() => {
-      setPhase("listening");
+      setPhase(micEnabledRef.current ? "listening" : "idle");
     }, 1600);
 
     return () => window.clearTimeout(t);
@@ -251,6 +269,11 @@ export function useJarvisVoiceLoop({
   // Auto-start mic when phase becomes listening
   useEffect(() => {
     if (!started) return;
+    if (!micEnabledRef.current) {
+      stopListeningHard();
+      return;
+    }
+
     if (phase !== "listening") {
       stopListeningHard();
       return;
@@ -279,13 +302,19 @@ export function useJarvisVoiceLoop({
 
   return {
     phase,
-    micEnabled,
+    micActive,
     supportsSpeechRecognition,
     error,
     messages,
+    sendText: async (text: string) => {
+      const safe = text.trim();
+      if (!safe) return;
+      pushMessage("user", safe);
+      await callBackend(safe);
+    },
     retry: () => {
       setError(null);
-      setPhase("listening");
+      setPhase(micEnabledRef.current ? "listening" : "idle");
     },
   };
 }
