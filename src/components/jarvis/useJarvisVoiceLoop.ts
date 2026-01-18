@@ -228,7 +228,7 @@ export function useJarvisVoiceLoop({
     try {
       rec.start();
     } catch (e) {
-      setMicEnabled(false);
+      setMicActive(false);
       setError({ title: "Could not start microphone", detail: e instanceof Error ? e.message : "Unknown error" });
       setPhase("error");
     }
